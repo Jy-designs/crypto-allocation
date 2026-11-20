@@ -510,9 +510,9 @@ function renderList() {
     r.fill.style.width = `${shownPct[idx]}%`;
     r.lock.setAttribute('aria-pressed', String(t.locked));
     r.lock.setAttribute('aria-label', `${t.locked ? 'Unlock' : 'Lock'} ${t.name}`);
-    // − stays active at the minimum so tapping it can show the €12 message
+    // − greys out once the coin shows €12, so it can't go lower and no message is needed
     const moveable = canMove(idx);
-    r.minus.disabled = !moveable;
+    r.minus.disabled = !moveable || shownPct[idx] <= MIN_PCT;
     r.plus.disabled = !moveable || t.pct >= maxFor(idx) - EPS;
   });
 }
