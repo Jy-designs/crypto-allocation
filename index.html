@@ -142,7 +142,10 @@ img { display: block; }
 /* Allocation split heading + one note line under it (Figma: 8px gap, Labil Regular 14 / 1.3).
    Grey helper text normally; the same line turns into the red error message when there is one. */
 .split-head { align-self: stretch; display: flex; flex-direction: column; gap: 8px; }
+.split-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .split-title { font-size: 22px; font-weight: 500; line-height: 1.2; }
+/* Prototype control (not in Figma): ▼ / ▲ change the bundle amount by €5. Same look as − / +. */
+.amount-ctrl { display: flex; align-items: center; gap: 8px; flex: none; }
 .alloc-note { font-size: 14px; font-weight: 400; line-height: 1.3; color: var(--text-secondary); }
 .alloc-note.is-error { color: var(--text-error); }
 
@@ -281,7 +284,17 @@ img { display: block; }
       </div>
     </div>
     <div class="split-head">
-      <h2 class="split-title" id="splitTitle">€100 allocation split</h2>
+      <div class="split-row">
+        <h2 class="split-title" id="splitTitle">€100 allocation split</h2>
+        <div class="amount-ctrl" role="group" aria-label="Bundle amount (prototype control)">
+          <button class="step-btn" id="amountDown" type="button" aria-label="Lower the bundle amount by €5">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 6l4 4 4-4" stroke="#111a29" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="step-btn" id="amountUp" type="button" aria-label="Raise the bundle amount by €5">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 10l4-4 4 4" stroke="#111a29" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
       <p class="alloc-note" id="allocNote" aria-live="polite">Select your allocation below.</p>
     </div>
   </div>
@@ -308,19 +321,28 @@ const ALL_COINS = [
   { id: 'sol', name: 'Solana',   icon: 'assets/token-sol.svg', donutIcon: 'assets/donut-sol.svg', bar: '#1c1c1c', ring: '#000000' },
   { id: 'xrp', name: 'XRP',      icon: 'assets/token-xrp.svg', donutIcon: 'assets/donut-xrp.svg', bar: '#1c1c1c', ring: '#23292f' },
 ];
-const INVEST = 100;             // bundle amount in euros: heading and each row's (€) value
+let INVEST = 100;               // bundle amount in euros (▼ / ▲ by the heading change it)
+const AMOUNT_STEP = 5;          // ▼ / ▲ change, in euros
+const AMOUNT_MAX = 10000;
+const MIN_AMOUNT_PER_COIN = 20; // lowest bundle amount = €20 × number of coins
 const MIN_EUR = 12;             // minimum per coin
 const STEP = 5;                 // − / + change, in percentage points
-
-const eur = n => `€${(Math.round(n * 100) / 100).toLocaleString('en-GB')}`;
-const MIN_PCT = (MIN_EUR / INVEST) * 100;
 const EPS = 1e-6;               // tolerance for comparing unrounded percentages
+
+// Euros: whole amounts without decimals (€20, €1,250), anything else with cents (€12.50).
+const eur = n => {
+  const v = Math.round(n * 100) / 100;
+  return `€${v.toLocaleString('en-GB', Number.isInteger(v) ? {} : { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+// Percentages show as whole numbers, so the minimum is the smallest whole % worth at least €12
+// (12% of €100, 5% = €12.50 of €250, 20% of €60).
+const minPctFor = amount => Math.ceil((MIN_EUR / amount) * 100 - EPS);
+let MIN_PCT = minPctFor(INVEST);
+
 const MSG_MIN = `A minimum of ${eur(MIN_EUR)} per coin.`;
 const MSG_TOTAL = 'Total allocation must be 100% in order to save.';
 const MSG_HELP = 'Select your allocation below.';   // shown in grey when there is no error
 const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-document.getElementById('splitTitle').textContent = `${eur(INVEST)} allocation split`;
 
 /* ---------- State ---------- */
 
@@ -415,20 +437,20 @@ function stopHold() { clearTimeout(hold.delay); clearInterval(hold.repeat); }
 document.addEventListener('pointerup', stopHold);
 document.addEventListener('pointercancel', stopHold);
 
-function bindStepper(btn, idx, dir) {
+function bindHold(btn, action) {
   btn.addEventListener('pointerdown', e => {
     if (e.button !== 0 || btn.disabled) return;
     stopHold();
-    step(idx, dir);
+    action();
     hold.delay = setTimeout(() => {
       hold.repeat = setInterval(() => {
         if (btn.disabled || !btn.isConnected) return stopHold();
-        step(idx, dir);
+        action();
       }, 110);
     }, 400);
   });
   btn.addEventListener('pointerleave', stopHold);
-  btn.addEventListener('click', e => { if (e.detail === 0) step(idx, dir); }); // keyboard
+  btn.addEventListener('click', e => { if (e.detail === 0) action(); }); // keyboard
   btn.addEventListener('contextmenu', e => e.preventDefault());
 }
 
@@ -489,8 +511,8 @@ function buildList() {
     plus.className = 'step-btn';
     plus.setAttribute('aria-label', `Increase ${t.name}`);
     plus.appendChild(img('assets/icon-plus.svg', 20, 20));
-    bindStepper(minus, idx, -1);
-    bindStepper(plus, idx, 1);
+    bindHold(minus, () => step(idx, -1));
+    bindHold(plus, () => step(idx, 1));
     steppers.append(minus, plus);
     line.append(track, steppers);
     ctrl.append(pct, line);
@@ -691,8 +713,61 @@ function renderStatus() {
 function update() {
   renderList();
   renderStatus();
+  renderAmount();
   animateDonut();
 }
+
+/* ---------- Bundle amount (prototype control) ---------- */
+
+const titleEl = document.getElementById('splitTitle');
+const amountDown = document.getElementById('amountDown');
+const amountUp = document.getElementById('amountUp');
+
+// Lowest bundle amount: €20 per coin (€40 for 2 coins, €60 for 3, €80 for 4, €100 for 5).
+function minAmount(n) {
+  return MIN_AMOUNT_PER_COIN * n;
+}
+
+// A smaller amount raises the minimum %, which can leave coins under it: lift them to it and take
+// the difference from the coins above it, unlocked ones first (locked ones only if needed).
+function enforceMin() {
+  const short = TOKENS.filter(t => t.pct < MIN_PCT - EPS);
+  if (!short.length) return;
+  const need = short.reduce((s, t) => s + (MIN_PCT - t.pct), 0);
+  short.forEach(t => { t.pct = MIN_PCT; });
+  const above = list => list.filter(t => t.pct > MIN_PCT + EPS);
+  const roomOf = list => list.reduce((s, t) => s + (t.pct - MIN_PCT), 0);
+  let donors = above(TOKENS.filter(t => !t.locked));
+  if (roomOf(donors) < need - EPS) donors = above(TOKENS);
+  const room = roomOf(donors);
+  donors.forEach(t => { t.pct -= (need * (t.pct - MIN_PCT)) / room; });
+}
+
+function setAmount(amount) {
+  INVEST = amount;
+  MIN_PCT = minPctFor(INVEST);
+  enforceMin();
+  minHit = false;
+  update();
+}
+
+// Steps snap to multiples of €5, between the minimum amount (€20 per coin) and €10,000.
+function stepAmount(dir) {
+  const target = dir > 0
+    ? Math.floor(INVEST / AMOUNT_STEP) * AMOUNT_STEP + AMOUNT_STEP
+    : Math.ceil(INVEST / AMOUNT_STEP) * AMOUNT_STEP - AMOUNT_STEP;
+  const value = Math.max(minAmount(TOKENS.length), Math.min(AMOUNT_MAX, target));
+  if (value !== INVEST) setAmount(value);
+}
+
+function renderAmount() {
+  titleEl.textContent = `${eur(INVEST)} allocation split`;
+  amountDown.disabled = INVEST <= minAmount(TOKENS.length);
+  amountUp.disabled = INVEST >= AMOUNT_MAX;
+}
+
+bindHold(amountDown, () => stepAmount(-1));
+bindHold(amountUp, () => stepAmount(1));
 
 /* ---------- Coin count (prototype control) ---------- */
 
@@ -702,6 +777,9 @@ const listScroll = document.getElementById('listScroll');
 const pinnedEl = document.getElementById('pinned');
 
 function setCount(n) {
+  // More coins need a bigger minimum amount (€20 per coin): raise it if needed.
+  INVEST = Math.max(INVEST, minAmount(n));
+  MIN_PCT = minPctFor(INVEST);
   const split = evenSplit(n);
   TOKENS = ALL_COINS.slice(0, n).map((c, i) => ({ ...c, pct: split[i], locked: false }));
   minHit = false;
@@ -714,6 +792,7 @@ function setCount(n) {
   drawDonut(shown);
   renderList();
   renderStatus();
+  renderAmount();
   listScroll.scrollTop = 0;
   pinnedEl.classList.remove('is-scrolled');
 }
