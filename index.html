@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Bundle Allocation</title>
+<style>
+@font-face { font-family: "Labil Grotesk"; src: url("fonts/LabilGrotesk-Regular.otf") format("opentype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Labil Grotesk"; src: url("fonts/LabilGrotesk-Medium.otf") format("opentype"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "Labil Grotesk"; src: url("fonts/LabilGrotesk-Bold.otf") format("opentype"); font-weight: 700; font-display: swap; }
+
+/* Tokens (Figma variables, "bundles::allocation" node 169533:13403) */
+:root {
+  --bg-default: #fffef8;          /* background/background-default */
+  --bg-darker-2: #f7f6ed;         /* background/background-darker-2 */
+  --bg-darker-3: #ecebe4;         /* background/background-darker-3 (locked button) */
+  --bg-opacity: rgba(255, 254, 248, 0.95); /* background/background-opacity */
+  --stroke-default: #ecebe4;      /* stroke/stroke-default */
+  --text-primary: #111a29;        /* text/text-primary */
+  --text-secondary: #707070;      /* text/text-secondary */
+  --text-error: #ea3636;          /* allocation error text (Figma node 169533:13452) */
+  --brand: #ff6000;               /* brand-default */
+  --safe-margin: 16px;            /* numeric/margins/safe-margin */
+  --radius-circle: 99px;          /* numeric/corner-radius/corner-radius-circle */
+  /* Lightmode/Elevation/card-elevation-1 */
+  --elevation-1: 0 26px 7px 0 rgba(211, 211, 207, 0), 0 17px 7px 0 rgba(211, 211, 207, 0.01),
+                 0 9px 6px 0 rgba(211, 211, 207, 0.05), 0 4px 4px 0 rgba(211, 211, 207, 0.09),
+                 0 1px 2px 0 rgba(211, 211, 207, 0.1);
+  --glass-shadow: 0 0 0 0.5px rgba(17, 26, 41, 0.04), 0 2px 10px rgba(17, 26, 41, 0.08);
+  --font: "Labil Grotesk", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+
+  /* Layout: fake status bar (50) + 11 gap, then the 68px header */
+  --header-top: 61px;
+  --header-h: 68px;
+  --cta-h: 95px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+  background: #e4e3da;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; padding: 32px 16px;
+  font-family: var(--font); color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; touch-action: manipulation; }
+button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+img { display: block; }
+[hidden] { display: none !important; }
+
+/* Phone frame (desktop); full screen on a real phone */
+.phone {
+  position: relative; overflow: hidden;
+  display: flex; flex-direction: column;
+  width: 375px; height: 812px; flex: none;
+  background: var(--bg-default);
+  border-radius: 44px;
+  box-shadow: 0 0 0 1px rgba(17, 26, 41, 0.06), 0 30px 70px rgba(17, 26, 41, 0.18);
+}
+
+/* Status bar + header, the donut and the title stay put; only the asset list scrolls */
+.top {
+  position: relative; flex: none;
+  height: calc(var(--header-top) + var(--header-h));
+  background: var(--bg-default);
+}
+.status { display: flex; align-items: center; height: 50px; padding-top: 21px; }
+.status-time {
+  flex: 1 0 0; display: flex; justify-content: center; padding: 0 6px 0 16px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  font-size: 17px; font-weight: 600; line-height: 22px; color: #000;
+}
+.status-island { width: 124px; height: 10px; flex: none; }
+.status-levels { flex: 1 0 0; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 0 16px 0 6px; }
+
+.header {
+  position: absolute; top: var(--header-top); left: 0; right: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px var(--safe-margin);
+}
+.back-btn {
+  width: 44px; height: 44px; border-radius: 296px;
+  display: grid; place-items: center;
+  background: #fff; box-shadow: var(--glass-shadow);
+}
+.header-title {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  font-size: 12px; font-weight: 500; line-height: 1.3; letter-spacing: 0.06px;
+  white-space: nowrap;
+}
+
+/* Prototype control (not in Figma): how many coins the bundle has, 2 to 5 */
+.count-pill {
+  position: relative; height: 44px; padding: 0 12px 0 16px;
+  display: flex; align-items: center; gap: 4px;
+  border-radius: 296px; background: #fff; box-shadow: var(--glass-shadow);
+  font-size: 14px; font-weight: 500; line-height: 1.3; white-space: nowrap;
+  cursor: pointer;
+}
+.count-pill:focus-within { outline: 2px solid var(--brand); outline-offset: 2px; }
+.count-pill select {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  opacity: 0; cursor: pointer; font-size: 16px; /* 16px stops iOS zooming in */
+}
+
+/* Pinned: donut + heading (+ error). A hairline shows once the list scrolls under it. */
+.pinned {
+  flex: none;
+  display: flex; flex-direction: column; align-items: center; gap: 24px;
+  padding: 0 var(--safe-margin) 16px;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s ease;
+}
+.pinned.is-scrolled { border-bottom-color: var(--stroke-default); }
+
+/* Scrolling list */
+.scroll {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: 0 var(--safe-margin) calc(var(--cta-h) + 24px);
+  scrollbar-width: none;
+}
+.scroll::-webkit-scrollbar { display: none; }
+
+/* Donut */
+.donut { position: relative; width: 201px; height: 201px; flex: none; }
+.donut svg { position: absolute; inset: 0; overflow: visible; }
+.donut-icon {
+  position: absolute; width: 24px; height: 24px; left: 0; top: 0;
+  transition: opacity 0.2s ease; pointer-events: none;
+}
+.donut-center {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  text-align: center; pointer-events: none;
+}
+.donut-total { font-size: 24px; font-weight: 700; line-height: 1; color: #000; font-variant-numeric: tabular-nums; }
+.donut-label { font-size: 10px; font-weight: 500; line-height: 1.3; letter-spacing: 0.05px; color: var(--text-secondary); }
+
+/* Allocation split heading + one note line under it (Figma: 8px gap, Labil Regular 14 / 1.3).
+   Grey helper text normally; the same line turns into the red error message when there is one. */
+.split-head { align-self: stretch; display: flex; flex-direction: column; gap: 8px; }
+.split-title { font-size: 22px; font-weight: 500; line-height: 1.2; }
+.alloc-note { font-size: 14px; font-weight: 400; line-height: 1.3; color: var(--text-secondary); }
+.alloc-note.is-error { color: var(--text-error); }
+
+.list { display: flex; flex-direction: column; gap: 16px; }
+.asset { display: flex; flex-direction: column; gap: 12px; border-radius: 8px; }
+.asset-head { display: flex; align-items: center; gap: 8px; padding-right: 8px; }
+.asset-head > img { width: 32px; height: 32px; flex: none; }
+.asset-name { flex: 1 0 0; min-width: 0; font-size: 14px; font-weight: 500; line-height: 1.3; }
+
+.lock-btn {
+  width: 32px; height: 32px; flex: none; border-radius: var(--radius-circle);
+  display: grid; place-items: center;
+  background: var(--bg-default);
+  transition: background-color 0.15s ease;
+}
+/* Locked (Figma "Token Choose List", node 168063:15968): grey circle + "unlock" icon */
+.lock-btn[aria-pressed="true"] { background: var(--bg-darker-3); }
+.lock-btn .icon-unlock,
+.lock-btn[aria-pressed="true"] .icon-lock { display: none; }
+.lock-btn[aria-pressed="true"] .icon-unlock { display: block; }
+.lock-btn:active { transform: scale(0.92); }
+
+.asset-ctrl { display: flex; flex-direction: column; align-items: flex-start; }
+.asset-pct {
+  margin-bottom: -8px;
+  font-size: 16px; font-weight: 500; line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.asset-eur { font-size: 14px; color: var(--text-secondary); }
+.asset-row { width: 100%; display: flex; align-items: center; gap: 24px; padding-right: 8px; }
+.track { flex: 1 0 0; min-width: 0; height: 4px; border-radius: 100px; overflow: hidden; background: var(--bg-darker-2); }
+.fill { height: 4px; border-radius: 100px; transition: width 0.3s cubic-bezier(0.22, 1, 0.36, 1); }
+.steppers { display: flex; align-items: center; gap: 24px; flex: none; }
+.step-btn {
+  width: 32px; height: 32px; border-radius: var(--radius-circle);
+  display: grid; place-items: center;
+  background: var(--bg-default);
+  border: 1px solid var(--stroke-default);
+  box-shadow: var(--elevation-1);
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  transition: opacity 0.15s ease, transform 0.1s ease, background-color 0.1s ease;
+}
+.step-btn:not(:disabled):active { transform: scale(0.92); background: var(--bg-darker-2); }
+.step-btn:disabled { opacity: 0.4; cursor: default; }
+
+.divider { padding: 0 16px; }
+.divider span { display: block; height: 1px; border-radius: var(--radius-circle); background: var(--stroke-default); }
+
+/* Bottom CTA */
+.cta-bar {
+  position: absolute; z-index: 10; left: 0; right: 0; bottom: 0;
+  padding: 12px var(--safe-margin) 32px;
+  background: var(--bg-opacity);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  border-top: 1px solid var(--stroke-default);
+}
+.cta {
+  width: 100%; padding: 16px 24px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--brand); border: 1px solid rgba(255, 96, 0, 0);
+  border-radius: var(--radius-circle);
+  font-size: 16px; font-weight: 700; line-height: 1; color: var(--text-primary);
+  transition: transform 0.1s ease, filter 0.1s ease, opacity 0.15s ease;
+}
+.cta:not(:disabled):active { transform: scale(0.98); filter: brightness(0.95); }
+.cta:disabled { opacity: 0.4; cursor: default; }   /* Figma Button State=Disabled */
+
+/* Prototype feedback after "Apply changes" */
+.toast {
+  position: absolute; z-index: 11; left: 50%; bottom: calc(var(--cta-h) + 12px);
+  transform: translate(-50%, 8px); opacity: 0; pointer-events: none;
+  padding: 10px 16px; border-radius: var(--radius-circle);
+  background: var(--text-primary); color: var(--bg-default);
+  font-size: 14px; font-weight: 500; line-height: 1.3; white-space: nowrap;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* Real phone: drop the frame and the fake status bar, respect the notch and home bar */
+@media (max-width: 480px) {
+  body { padding: 0; background: var(--bg-default); align-items: stretch; }
+  .phone { width: 100%; height: 100vh; height: 100dvh; border-radius: 0; box-shadow: none; }
+  :root { --header-top: calc(env(safe-area-inset-top, 0px) + 8px); }
+  .status { display: none; }
+  .cta-bar { padding-bottom: max(32px, calc(env(safe-area-inset-bottom, 0px) + 12px)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; }
+}
+</style>
+</head>
+<body>
+<main class="phone">
+
+  <div class="top">
+    <div class="status" aria-hidden="true">
+      <div class="status-time">9:41</div>
+      <div class="status-island"></div>
+      <div class="status-levels">
+        <img src="assets/status-cellular.svg" width="19.2" height="12.2264" alt="">
+        <img src="assets/status-wifi.svg" width="17.1417" height="12.3283" alt="">
+        <img src="assets/status-battery.svg" width="27.328" height="13" alt="">
+      </div>
+    </div>
+
+    <header class="header">
+      <button class="back-btn" type="button" aria-label="Back">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M14.5 5.5 8 12l6.5 6.5" stroke="#111a29" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <h1 class="header-title">Bundle Allocation</h1>
+      <label class="count-pill">
+        <span id="countLabel">5 coins</span>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 6l4 4 4-4" stroke="#111a29" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <select id="countSelect" aria-label="Number of coins in the bundle (prototype control)">
+          <option value="2">2 coins</option>
+          <option value="3">3 coins</option>
+          <option value="4">4 coins</option>
+          <option value="5" selected>5 coins</option>
+        </select>
+      </label>
+    </header>
+  </div>
+
+  <div class="pinned" id="pinned">
+    <div class="donut" id="donut">
+      <svg id="donutSvg" width="201" height="201" viewBox="0 0 201 201" aria-hidden="true"></svg>
+      <div class="donut-center">
+        <div class="donut-total" id="donutTotal">100%</div>
+        <div class="donut-label">Total allocation</div>
+      </div>
+    </div>
+    <div class="split-head">
+      <h2 class="split-title" id="splitTitle">€100 allocation split</h2>
+      <p class="alloc-note" id="allocNote" aria-live="polite">Select your allocation below.</p>
+    </div>
+  </div>
+
+  <section class="scroll" id="listScroll" aria-labelledby="splitTitle">
+    <div class="list" id="list"></div>
+  </section>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <div class="cta-bar">
+    <button class="cta" id="cta" type="button">Apply changes</button>
+  </div>
+
+</main>
+
+<script>
+/* Coins, in the Figma order. bar = list bar colour, ring = donut segment colour.
+   The coin-count dropdown shows the first 2, 3, 4 or 5. */
+const ALL_COINS = [
+  { id: 'btc', name: 'Bitcoin',  icon: 'assets/token-btc.svg', donutIcon: 'assets/donut-btc.svg', bar: '#f7931a', ring: '#f7931a' },
+  { id: 'eth', name: 'Ethereum', icon: 'assets/token-eth.svg', donutIcon: 'assets/donut-eth.svg', bar: '#1c1c1c', ring: '#1c1c1c' },
+  { id: 'bnb', name: 'Binance',  icon: 'assets/token-bnb.svg', donutIcon: 'assets/donut-bnb.svg', bar: '#f3ba2f', ring: '#ffbb26' },
+  { id: 'sol', name: 'Solana',   icon: 'assets/token-sol.svg', donutIcon: 'assets/donut-sol.svg', bar: '#1c1c1c', ring: '#000000' },
+  { id: 'xrp', name: 'XRP',      icon: 'assets/token-xrp.svg', donutIcon: 'assets/donut-xrp.svg', bar: '#1c1c1c', ring: '#23292f' },
+];
+const INVEST = 100;             // bundle amount in euros: heading and each row's (€) value
+const MIN_EUR = 12;             // minimum per coin
+const STEP = 5;                 // − / + change, in percentage points
+
+const eur = n => `€${(Math.round(n * 100) / 100).toLocaleString('en-GB')}`;
+const MIN_PCT = (MIN_EUR / INVEST) * 100;
+const EPS = 1e-6;               // tolerance for comparing unrounded percentages
+const MSG_MIN = `A minimum of ${eur(MIN_EUR)} per coin.`;
+const MSG_TOTAL = 'Total allocation must be 100% in order to save.';
+const MSG_HELP = 'Select your allocation below.';   // shown in grey when there is no error
+const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+document.getElementById('splitTitle').textContent = `${eur(INVEST)} allocation split`;
+
+/* ---------- State ---------- */
+
+let TOKENS = [];        // the coins on screen: { ...coin, pct, locked }
+let minHit = false;     // the last − tried to go under the minimum
+
+const total = () => TOKENS.reduce((s, t) => s + t.pct, 0);
+const freeOthers = idx => TOKENS.map((_, i) => i).filter(i => i !== idx && !TOKENS[i].locked);
+const lockedSum = idx => TOKENS.reduce((s, t, i) => (i !== idx && t.locked ? s + t.pct : s), 0);
+
+// Highest a coin can go: as far as the other unlocked coins can give way (down to €12 each),
+// so the total never passes 100%.
+function maxFor(idx) {
+  return 100 - lockedSum(idx) - MIN_PCT * freeOthers(idx).length;
+}
+
+// A coin only moves if another unlocked coin can make up the difference
+// (so with every other coin locked, its − / + are disabled).
+const canMove = idx => !TOKENS[idx].locked && freeOthers(idx).length > 0;
+
+function evenSplit(n) {
+  const base = Math.floor(100 / n);
+  const extra = 100 - base * n;
+  return Array.from({ length: n }, (_, i) => base + (i < extra ? 1 : 0));
+}
+
+// Move the free coins towards holding `pool` between them, in proportion to what each holds above
+// €12 (equally if none holds more). None goes under €12, and a step up then down lands back exactly
+// where it started. Values are kept unrounded here; the screen shows whole percentages.
+// (maxFor makes sure they can always give enough, so the total stays at 100%.)
+function spread(pool, free) {
+  const room = free.map(i => TOKENS[i].pct - MIN_PCT);
+  const roomSum = room.reduce((a, b) => a + b, 0);
+  const current = free.reduce((s, i) => s + TOKENS[i].pct, 0);
+  const delta = Math.max(pool - current, -roomSum);
+  if (Math.abs(delta) < EPS) return;
+  free.forEach((i, j) => {
+    const share = roomSum > EPS ? room[j] / roomSum : 1 / free.length;
+    TOKENS[i].pct = Math.max(MIN_PCT, TOKENS[i].pct + delta * share);
+  });
+}
+
+// Whole percentages for the screen, adding up to the rounded total (largest remainder).
+function displayPcts() {
+  const vals = TOKENS.map(t => t.pct);
+  const parts = vals.map(v => Math.floor(v + EPS));
+  let left = Math.round(total()) - parts.reduce((a, b) => a + b, 0);
+  vals.map((v, i) => [v - parts[i], i]).sort((a, b) => b[0] - a[0])
+      .forEach(([, i]) => { if (left > 0) { parts[i]++; left--; } });
+  return parts;
+}
+
+// − / + change one coin and rebalance the other unlocked coins so the total stays at 100%.
+// Steps snap to multiples of 5 (e.g. 12 → 15, 34 → 30); no coin goes under the €12 minimum.
+function step(idx, dir) {
+  const t = TOKENS[idx];
+  if (!canMove(idx)) return;
+  const target = dir > 0
+    ? Math.floor(t.pct / STEP + EPS) * STEP + STEP
+    : Math.ceil(t.pct / STEP - EPS) * STEP - STEP;
+  const value = Math.max(MIN_PCT, Math.min(maxFor(idx), target));
+  if (dir > 0 && value < t.pct - EPS) return;    // + never lowers a coin
+  // Landing on €12 is fine; the message only shows when − is tapped on a coin already at €12.
+  minHit = dir < 0 && t.pct <= MIN_PCT + EPS;
+  t.pct = value;
+  const free = freeOthers(idx);
+  if (free.length) spread(100 - lockedSum(idx) - value, free);
+  update();
+}
+
+function toggleLock(idx) {
+  TOKENS[idx].locked = !TOKENS[idx].locked;
+  minHit = false;
+  update();
+}
+
+/* ---------- List ---------- */
+
+const listEl = document.getElementById('list');
+let rows = [];
+
+function img(src, w, h) {
+  const el = document.createElement('img');
+  // setAttribute keeps fractional sizes (the IDL .width would round 13.5 down to 13)
+  el.src = src; el.setAttribute('width', w); el.setAttribute('height', h); el.alt = '';
+  return el;
+}
+
+// Tap = one step; press and hold repeats.
+const hold = { delay: 0, repeat: 0 };
+function stopHold() { clearTimeout(hold.delay); clearInterval(hold.repeat); }
+document.addEventListener('pointerup', stopHold);
+document.addEventListener('pointercancel', stopHold);
+
+function bindStepper(btn, idx, dir) {
+  btn.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || btn.disabled) return;
+    stopHold();
+    step(idx, dir);
+    hold.delay = setTimeout(() => {
+      hold.repeat = setInterval(() => {
+        if (btn.disabled || !btn.isConnected) return stopHold();
+        step(idx, dir);
+      }, 110);
+    }, 400);
+  });
+  btn.addEventListener('pointerleave', stopHold);
+  btn.addEventListener('click', e => { if (e.detail === 0) step(idx, dir); }); // keyboard
+  btn.addEventListener('contextmenu', e => e.preventDefault());
+}
+
+function buildList() {
+  listEl.replaceChildren();
+  rows = TOKENS.map((t, idx) => {
+    if (idx > 0) {
+      const div = document.createElement('div');
+      div.className = 'divider';
+      div.innerHTML = '<span></span>';
+      listEl.appendChild(div);
+    }
+
+    const row = document.createElement('div');
+    row.className = 'asset';
+
+    const head = document.createElement('div');
+    head.className = 'asset-head';
+    const name = document.createElement('p');
+    name.className = 'asset-name';
+    name.textContent = t.name;
+    const lock = document.createElement('button');
+    lock.type = 'button';
+    lock.className = 'lock-btn';
+    const lockIcon = img('assets/icon-lock.svg', 13.5, 17.5);
+    lockIcon.classList.add('icon-lock');
+    const unlockIcon = img('assets/icon-unlock.svg', 24, 24);
+    unlockIcon.classList.add('icon-unlock');
+    lock.append(lockIcon, unlockIcon);
+    lock.addEventListener('click', () => toggleLock(idx));
+    head.append(img(t.icon, 32, 32), name, lock);
+
+    const ctrl = document.createElement('div');
+    ctrl.className = 'asset-ctrl';
+    const pct = document.createElement('p');
+    pct.className = 'asset-pct';
+    const pctNum = document.createElement('span');
+    const pctEur = document.createElement('span');
+    pctEur.className = 'asset-eur';
+    pct.append(pctNum, pctEur);
+    const line = document.createElement('div');
+    line.className = 'asset-row';
+    const track = document.createElement('div');
+    track.className = 'track';
+    const fill = document.createElement('div');
+    fill.className = 'fill';
+    fill.style.background = t.bar;
+    track.appendChild(fill);
+    const steppers = document.createElement('div');
+    steppers.className = 'steppers';
+    const minus = document.createElement('button');
+    minus.type = 'button';
+    minus.className = 'step-btn';
+    minus.setAttribute('aria-label', `Decrease ${t.name}`);
+    minus.appendChild(img('assets/icon-minus.svg', 12.1667, 1.5));
+    const plus = document.createElement('button');
+    plus.type = 'button';
+    plus.className = 'step-btn';
+    plus.setAttribute('aria-label', `Increase ${t.name}`);
+    plus.appendChild(img('assets/icon-plus.svg', 20, 20));
+    bindStepper(minus, idx, -1);
+    bindStepper(plus, idx, 1);
+    steppers.append(minus, plus);
+    line.append(track, steppers);
+    ctrl.append(pct, line);
+
+    row.append(head, ctrl);
+    listEl.appendChild(row);
+    return { lock, pctNum, pctEur, fill, minus, plus };
+  });
+}
+
+function renderList() {
+  const shownPct = displayPcts();
+  TOKENS.forEach((t, idx) => {
+    const r = rows[idx];
+    r.pctNum.textContent = `${shownPct[idx]}% `;
+    r.pctEur.textContent = `(${eur((shownPct[idx] / 100) * INVEST)})`;
+    r.fill.style.width = `${shownPct[idx]}%`;
+    r.lock.setAttribute('aria-pressed', String(t.locked));
+    r.lock.setAttribute('aria-label', `${t.locked ? 'Unlock' : 'Lock'} ${t.name}`);
+    // − stays active at the minimum so tapping it can show the €12 message
+    const moveable = canMove(idx);
+    r.minus.disabled = !moveable;
+    r.plus.disabled = !moveable || t.pct >= maxFor(idx) - EPS;
+  });
+}
+
+/* ---------- Donut ---------- */
+// Geometry taken from the Figma ring: 201px, outer radius 100.5, inner 67.3,
+// 4.4px gap between segments, 8px rounded corners, first segment starts at 12 o'clock.
+// The coins always share the whole ring (each by its share of the total), whatever the total is.
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const C = 100.5, R_OUT = 100.5, R_IN = 67.3, GAP = 4.4, CORNER = 8;
+const R_MID = (R_OUT + R_IN) / 2;
+const ICON_FROM_END = 18;       // icon centre, in px of arc before the segment's clockwise end (as in Figma)
+const ICON_SIZE = 24;
+// Smallest a coin segment is ever drawn: the logo plus 8px either side plus the gap (measured on
+// the ring's centre line), so every logo stays visible however small the coin's share is.
+const MIN_ARC = ICON_SIZE + 16 + GAP;
+const MIN_SPAN = MIN_ARC / R_MID;
+
+const svg = document.getElementById('donutSvg');
+const donutEl = document.getElementById('donut');
+const centreEl = donutEl.querySelector('.donut-center');
+let paths = [], icons = [];
+
+function buildDonut() {
+  svg.replaceChildren();
+  icons.forEach(el => el.remove());
+  paths = TOKENS.map(t => t.ring).map(colour => {
+    const p = document.createElementNS(SVG_NS, 'path');
+    p.setAttribute('fill', colour);
+    svg.appendChild(p);
+    return p;
+  });
+  icons = TOKENS.map(t => {
+    const el = img(t.donutIcon, ICON_SIZE, ICON_SIZE);
+    el.className = 'donut-icon';
+    donutEl.insertBefore(el, centreEl);
+    return el;
+  });
+}
+
+const pt = (r, a) => [C + r * Math.cos(a), C + r * Math.sin(a)];
+const f = n => n.toFixed(3);
+
+// One corner where a side edge (at boundary angle `theta`) meets the outer or inner circle.
+// dir = +1 for the segment's start edge, -1 for its end edge.
+function corner(theta, dir, outer, rc) {
+  const half = GAP / 2;
+  const d = outer ? R_OUT - rc : R_IN + rc;
+  const off = Math.asin((half + rc) / d);
+  const phi = theta + dir * off;
+  const along = Math.sqrt(d * d - (half + rc) ** 2);
+  const u = [Math.cos(theta), Math.sin(theta)];
+  const n = [-dir * Math.sin(theta), dir * Math.cos(theta)];
+  return {
+    phi,
+    arc: pt(outer ? R_OUT : R_IN, phi),
+    side: [C + along * u[0] + half * n[0], C + along * u[1] + half * n[1]],
+  };
+}
+
+function sectorPath(a0, a1) {
+  const span = a1 - a0;
+  if (2 * Math.asin(GAP / 2 / R_IN) >= span) return '';          // thinner than the gap
+  let rc = CORNER;
+  while (rc > 0 && 2 * Math.asin((GAP / 2 + rc) / (R_IN + rc)) > span) rc -= 0.25;
+  rc = Math.max(0, rc);
+
+  const so = corner(a0, 1, true, rc), si = corner(a0, 1, false, rc);
+  const eo = corner(a1, -1, true, rc), ei = corner(a1, -1, false, rc);
+  const bigOut = eo.phi - so.phi > Math.PI ? 1 : 0;
+  const bigIn = ei.phi - si.phi > Math.PI ? 1 : 0;
+  return [
+    `M${f(so.side[0])},${f(so.side[1])}`,
+    `A${rc},${rc} 0 0 1 ${f(so.arc[0])},${f(so.arc[1])}`,
+    `A${R_OUT},${R_OUT} 0 ${bigOut} 1 ${f(eo.arc[0])},${f(eo.arc[1])}`,
+    `A${rc},${rc} 0 0 1 ${f(eo.side[0])},${f(eo.side[1])}`,
+    `L${f(ei.side[0])},${f(ei.side[1])}`,
+    `A${rc},${rc} 0 0 1 ${f(ei.arc[0])},${f(ei.arc[1])}`,
+    `A${R_IN},${R_IN} 0 ${bigIn} 0 ${f(si.arc[0])},${f(si.arc[1])}`,
+    `A${rc},${rc} 0 0 1 ${f(si.side[0])},${f(si.side[1])}`,
+    'Z',
+  ].join(' ');
+}
+
+function ringPath() {
+  // One segment covering everything: a full ring with no gap.
+  const ring = r => `M${C + r},${C} A${r},${r} 0 1 1 ${C - r},${C} A${r},${r} 0 1 1 ${C + r},${C} Z`;
+  return `${ring(R_OUT)} ${ring(R_IN)}`;
+}
+
+const donutValues = () => TOKENS.map(t => t.pct);
+let shown = [];
+
+// Angles for each segment: proportional to its value, except that a coin never gets less than
+// MIN_SPAN. Coins that would be smaller are fixed at MIN_SPAN and the rest of the ring is shared
+// out proportionally among the others (repeated until nothing else falls under the minimum).
+function segmentSpans(values) {
+  const TAU = 2 * Math.PI;
+  const isCoin = i => i < icons.length;
+  const fixed = values.map(() => false);
+  const sum = values.reduce((a, b) => a + b, 0) || 1;
+  let spans = values.map(v => (v / sum) * TAU);
+  for (let pass = 0; pass < values.length; pass++) {
+    let changed = false;
+    spans.forEach((s, i) => {
+      if (isCoin(i) && !fixed[i] && values[i] > 0 && s < MIN_SPAN) { fixed[i] = true; changed = true; }
+    });
+    if (!changed) break;
+    const free = TAU - fixed.filter(Boolean).length * MIN_SPAN;
+    const freeSum = values.reduce((a, v, i) => (fixed[i] ? a : a + v), 0);
+    spans = values.map((v, i) => (fixed[i] ? MIN_SPAN : freeSum > 0 ? (v / freeSum) * free : 0));
+  }
+  return spans;
+}
+
+function drawDonut(values) {
+  const spans = segmentSpans(values);
+  let a = -Math.PI / 2;
+  values.forEach((v, i) => {
+    const span = spans[i];
+    const a0 = a, a1 = a + span;
+    a = a1;
+
+    if (span >= 2 * Math.PI * 0.9995) {
+      paths[i].setAttribute('d', ringPath());
+      paths[i].setAttribute('fill-rule', 'evenodd');
+    } else {
+      paths[i].setAttribute('d', sectorPath(a0, a1));
+      paths[i].removeAttribute('fill-rule');
+    }
+
+    // Icon sits on the ring's centre line, near the clockwise end, like in Figma. On small
+    // segments it slides to the centre (fully centred at the minimum size), so it never jumps.
+    const arcLen = span * R_MID;
+    const t = Math.min(1, Math.max(0, (arcLen - MIN_ARC) / MIN_ARC));
+    const back = (1 - t) * (arcLen / 2) + t * ICON_FROM_END;
+    const [x, y] = pt(R_MID, a1 - back / R_MID);
+    icons[i].style.transform = `translate(${f(x - ICON_SIZE / 2)}px, ${f(y - ICON_SIZE / 2)}px)`;
+  });
+}
+
+let anim = 0;
+function animateDonut() {
+  const from = shown.slice();
+  const to = donutValues();
+  cancelAnimationFrame(anim);
+  if (REDUCED_MOTION || from.length !== to.length) { shown = to; drawDonut(shown); return; }
+  const start = performance.now(), dur = 300;
+  const ease = p => 1 - Math.pow(1 - p, 3);
+  const tick = now => {
+    const p = Math.min(1, (now - start) / dur);
+    shown = from.map((v, i) => v + (to[i] - v) * ease(p));
+    drawDonut(shown);
+    if (p < 1) anim = requestAnimationFrame(tick);
+  };
+  anim = requestAnimationFrame(tick);
+}
+
+/* ---------- Status: total, error, Apply ---------- */
+
+const totalEl = document.getElementById('donutTotal');
+const noteEl = document.getElementById('allocNote');
+const ctaEl = document.getElementById('cta');
+
+function renderStatus() {
+  const tot = total();
+  const off100 = Math.abs(tot - 100) > 0.01;
+  totalEl.textContent = `${Math.round(tot)}%`;
+  const msg = minHit ? MSG_MIN : off100 ? MSG_TOTAL : '';
+  noteEl.textContent = msg || MSG_HELP;
+  noteEl.classList.toggle('is-error', Boolean(msg));
+  ctaEl.disabled = off100;
+}
+
+function update() {
+  renderList();
+  renderStatus();
+  animateDonut();
+}
+
+/* ---------- Coin count (prototype control) ---------- */
+
+const countSelect = document.getElementById('countSelect');
+const countLabel = document.getElementById('countLabel');
+const listScroll = document.getElementById('listScroll');
+const pinnedEl = document.getElementById('pinned');
+
+function setCount(n) {
+  const split = evenSplit(n);
+  TOKENS = ALL_COINS.slice(0, n).map((c, i) => ({ ...c, pct: split[i], locked: false }));
+  minHit = false;
+  countLabel.textContent = `${n} coins`;
+  stopHold();
+  cancelAnimationFrame(anim);
+  buildList();
+  buildDonut();
+  shown = donutValues();
+  drawDonut(shown);
+  renderList();
+  renderStatus();
+  listScroll.scrollTop = 0;
+  pinnedEl.classList.remove('is-scrolled');
+}
+countSelect.addEventListener('change', () => setCount(Number(countSelect.value)));
+
+/* ---------- Apply, scroll ---------- */
+
+const toastEl = document.getElementById('toast');
+let toastTimer = 0;
+ctaEl.addEventListener('click', () => {
+  if (ctaEl.disabled) return;
+  toastEl.textContent = 'Changes applied';
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1800);
+});
+
+listScroll.addEventListener('scroll', () => {
+  pinnedEl.classList.toggle('is-scrolled', listScroll.scrollTop > 0);
+}, { passive: true });
+
+setCount(Number(countSelect.value));
+</script>
+</body>
+</html>
